@@ -1,6 +1,7 @@
 from datetime import datetime, timedelta
 from json.decoder import JSONDecodeError
 from random import gammavariate
+import requests
 from requests.exceptions import ConnectionError
 from termcolor import colored
 from typing import Awaitable, Callable, List, Optional, Tuple, Union
@@ -75,10 +76,11 @@ def srtgo(debug=False):
         ("예매 확인/취소", 2),
         ("로그인 설정", 3), 
         ("텔레그램 설정", 4),
-        ("카드 설정", 5),
-        ("역 설정", 6),
-        ("역 직접 수정", 7),
-        ("예매 옵션 설정", 8),
+        ("디스코드 설정", 5),
+        ("카드 설정", 6),
+        ("역 설정", 7),
+        ("역 직접 수정", 8),
+        ("예매 옵션 설정", 9),
         ("나가기", -1)
     ]
 
@@ -93,10 +95,11 @@ def srtgo(debug=False):
         2: lambda rt: check_reservation(rt, debug),
         3: lambda rt: set_login(rt, debug),
         4: lambda _: set_telegram(),
-        5: lambda _: set_card(),
-        6: lambda rt: set_station(rt),
-        7: lambda rt: edit_station(rt),
-        8: lambda _: set_options()
+        5: lambda _: set_discord(),
+        6: lambda _: set_card(),
+        7: lambda rt: set_station(rt),
+        8: lambda rt: edit_station(rt),
+        9: lambda _: set_options()
     }
 
     while True:
@@ -105,7 +108,7 @@ def srtgo(debug=False):
         if choice == -1:
             break
 
-        if choice in {1, 2, 3, 6, 7}:
+        if choice in {1, 2, 3, 7, 8}:
             rail_type = inquirer.list_input(
                 message="열차 선택 (↕:이동, Enter: 선택, Ctrl-C: 취소)",
                 choices=RAIL_CHOICES
@@ -245,6 +248,39 @@ def get_telegram() -> Optional[Callable[[str], Awaitable[None]]]:
 
     return tgprintf
 
+def set_discord() -> bool:
+    webhook_url = keyring.get_password("discord", "webhook_url") or ""
+    webhook_info = inquirer.prompt([
+        inquirer.Editor("webhook_url", message="디스코드 웹훅 URL (Enter: 완료, Ctrl-C: 취소)", default=webhook_url)
+    ])
+    if not webhook_info:
+        return False
+    
+    webhook_url = webhook_info["webhook_url"].strip()
+    print(f"디스코드 웹훅 URL: {webhook_url}")
+    
+    try:
+        requests.post(webhook_url, json={"content": "test"})
+        keyring.set_password("discord", "ok", "1")
+        keyring.set_password("discord", "webhook_url", webhook_url)
+        return True
+    except Exception as err:
+        print(err)
+        try:
+            keyring.delete_password("discord", "ok")
+        except Exception as err:
+            print(err)
+        return False
+    
+def get_discord() -> Optional[Callable[[str], Awaitable[None]]]:
+    webhook_url = keyring.get_password("discord", "webhook_url")
+    if not webhook_url:
+        return None
+    
+    async def discord_printf(text):
+        requests.post(webhook_url, json={"content": text})
+
+    return discord_printf
 
 def set_card() -> None:
     card_info = {
@@ -501,8 +537,7 @@ def reserve(rail_type="SRT", debug=False):
             print(colored("\n\n💳 ✨ 결제 성공!!! ✨ 💳\n\n", "green", "on_red"), end="")
             msg += "\n결제 완료"
 
-        tgprintf = get_telegram()
-        asyncio.run(tgprintf(msg))
+        send_notification(msg)
 
     # Reservation loop
     i_try = 0
@@ -571,8 +606,7 @@ def _sleep():
 def _handle_error(ex, msg=None):
     msg = msg or f"\nException: {ex}, Type: {type(ex)}, Message: {ex.msg if hasattr(ex, 'msg') else 'No message attribute'}"
     print(msg)
-    tgprintf = get_telegram()
-    asyncio.run(tgprintf(msg))
+    send_notification(msg)
     return inquirer.confirm(message="계속할까요", default=True)
 
 def _is_seat_available(train, seat_type, rail_type):
@@ -638,8 +672,7 @@ def check_reservation(rail_type="SRT", debug=False):
                         out.extend(map(str, reservation.tickets))
             
             if out:
-                tgprintf = get_telegram()
-                asyncio.run(tgprintf("\n".join(out)))
+                send_notification("\n".join(out))
             return
 
         if inquirer.confirm(message=colored("정말 취소하시겠습니까", "green", "on_red")):
@@ -651,6 +684,16 @@ def check_reservation(rail_type="SRT", debug=False):
             except Exception as err:
                 raise err
             return
+
+
+def send_notification(text: str) -> None:
+    tgprintf = get_telegram()
+    discord_printf = get_discord()
+    
+    if tgprintf:
+        asyncio.run(tgprintf(text))
+    if discord_printf:
+        asyncio.run(discord_printf(text))
 
 
 if __name__ == "__main__":
